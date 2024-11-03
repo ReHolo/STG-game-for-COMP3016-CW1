@@ -22,7 +22,6 @@
     <ClCompile Include="main.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="Game.h" />
     <ClInclude Include="resource.h" />
   </ItemGroup>
   <ItemGroup>
