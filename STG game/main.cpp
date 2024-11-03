@@ -1,3 +1,4 @@
+#define SDL_MAIN_HANDLED
 #include <iostream>
 #include <SDL.h>
 #include <SDL_ttf.h>
@@ -6,16 +7,93 @@
 #include <string>
 #include <cstdlib>
 #include <ctime>
+#include <windows.h>
 
-struct GameObject {
+const int SCREEN_WIDTH = 800;
+const int SCREEN_HEIGHT = 600;
+
+class GameObject {
+public:
     SDL_Rect rect;
     SDL_Texture* texture;
+
+    GameObject(int x, int y, int w, int h, SDL_Texture* tex) : rect{ x, y, w, h }, texture(tex) {}
+    virtual void update() {}
+    virtual void render(SDL_Renderer* renderer) {
+        if (texture) {
+            SDL_RenderCopy(renderer, texture, nullptr, &rect);
+        }
+    }
 };
 
-struct Bullet {
-    SDL_Rect rect;
+class Bullet : public GameObject {
+public:
     int speed;
     bool isPlayerBullet;
+
+    Bullet(int x, int y, int spd, bool isPlayer)
+        : GameObject(x, y, 5, 10, nullptr), speed(spd), isPlayerBullet(isPlayer) {}
+
+    void update() override {
+        rect.y += speed;
+    }
+
+    void render(SDL_Renderer* renderer) override {
+        SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
+        SDL_RenderFillRect(renderer, &rect);
+    }
+};
+
+class Player : public GameObject {
+public:
+    int lives;
+    Uint32 lastShotTime;
+    const Uint32 shotInterval = 300;
+
+    Player(int x, int y, int w, int h, SDL_Texture* tex, int lv)
+        : GameObject(x, y, w, h, tex), lives(lv), lastShotTime(0) {}
+
+    void handleInput(const Uint8* currentKeyStates, std::vector<Bullet>& bullets) {
+        int moveX = 0;
+        int moveY = 0;
+        if (currentKeyStates[SDL_SCANCODE_UP]) moveY = -5;
+        if (currentKeyStates[SDL_SCANCODE_DOWN]) moveY = 5;
+        if (currentKeyStates[SDL_SCANCODE_LEFT]) moveX = -5;
+        if (currentKeyStates[SDL_SCANCODE_RIGHT]) moveX = 5;
+
+        rect.x += moveX;
+        rect.y += moveY;
+
+        if (rect.y < 0) rect.y = 0;
+        if (rect.y + rect.h > SCREEN_HEIGHT) rect.y = SCREEN_HEIGHT - rect.h;
+        if (rect.x < 0) rect.x = 0;
+        if (rect.x + rect.w > SCREEN_WIDTH) rect.x = SCREEN_WIDTH - rect.w;
+
+        Uint32 currentTime = SDL_GetTicks();
+        if (currentKeyStates[SDL_SCANCODE_SPACE] && currentTime - lastShotTime >= shotInterval) {
+            bullets.emplace_back(rect.x + rect.w / 2 - 2, rect.y, -10, true);
+            lastShotTime = currentTime;
+        }
+    }
+};
+
+class Enemy : public GameObject {
+public:
+    Uint32 lastShotTime;
+    Uint32 shootInterval;
+
+    Enemy(int x, int y, int w, int h, SDL_Texture* tex)
+        : GameObject(x, y, w, h, tex), lastShotTime(0) {
+        shootInterval = 1000 + rand() % 2000;
+    }
+
+    void update() override {
+        rect.y += 2;
+    }
+
+    void fireBullet(std::vector<Bullet>& bullets) {
+        bullets.emplace_back(rect.x + rect.w / 2 - 2, rect.y + rect.h, 5, false);
+    }
 };
 
 enum GameState {
@@ -24,480 +102,505 @@ enum GameState {
     GAME_OVER
 };
 
-GameState gameState = MAIN_MENU;
-SDL_Texture* backgroundTexture = nullptr;
-SDL_Window* window = nullptr;
-SDL_Renderer* renderer = nullptr;
-SDL_Texture* playerTexture = nullptr;
-SDL_Texture* enemyTexture = nullptr;
-std::vector<GameObject> enemies;
-std::vector<Bullet> bullets;
-int playerLives = 3;
-int score = 0;
-int enemySpawnRate = 3000;
-Uint32 lastEnemySpawnTime = 0;
-const int FPS = 60;
-const int frameDelay = 1000 / FPS;
-SDL_Rect playerRect = { 375, 550, 50, 50 };
-Uint32 lastEnemyFireTime = 0;
-const int enemyFireRate = 2000;
-int enemyKillCount = 0;
-Uint32 gameStartTime = 0;
-Uint32 finalGameTime = 0; // Holds the final game time when the player dies
+class Game {
+public:
+    GameState gameState;
 
-bool init() {
-    if (SDL_Init(SDL_INIT_VIDEO) < 0) {
-        std::cerr << "SDL could not initialize! SDL_Error: " << SDL_GetError() << std::endl;
-        return false;
+    SDL_Window* window;
+    SDL_Renderer* renderer;
+    SDL_Texture* playerTexture;
+    SDL_Texture* enemyTexture;
+    TTF_Font* font;
+
+    std::vector<Enemy> enemies;
+    std::vector<Bullet> bullets;
+    Player* player;
+    int score;
+    int enemySpawnRate;
+    const int minSpawnRate;
+    Uint32 lastEnemySpawnTime;
+    const int FPS;
+    int frameDelay;
+    Uint32 lastEnemyFireTime;
+    int enemyKillCount;
+    Uint32 gameStartTime;
+    Uint32 finalGameTime;
+
+    SDL_Rect startButtonRect;
+    SDL_Rect quitButtonRect;
+    SDL_Rect returnButtonRect;
+
+    Game() : gameState(MAIN_MENU),
+        window(nullptr),
+        renderer(nullptr),
+        playerTexture(nullptr),
+        enemyTexture(nullptr),
+        font(nullptr),
+        player(nullptr), score(0),
+        enemySpawnRate(3000),
+        minSpawnRate(500),
+        lastEnemySpawnTime(0),
+        FPS(60),
+        frameDelay(1000 / FPS),
+        lastEnemyFireTime(0),
+        enemyKillCount(0),
+        gameStartTime(0),
+        finalGameTime(0),
+        startButtonRect{ 350, 250, 100, 50 },
+        quitButtonRect{ 350, 350, 100, 50 },
+        returnButtonRect{ 350, 450, 100, 50 } {
     }
 
-    window = SDL_CreateWindow("Bullet Hell Game", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, 800, 600, SDL_WINDOW_SHOWN);
-    if (window == nullptr) {
-        std::cerr << "Window could not be created! SDL_Error: " << SDL_GetError() << std::endl;
-        return false;
-    }
-
-    renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
-    if (renderer == nullptr) {
-        std::cerr << "Renderer could not be created! SDL_Error: " << SDL_GetError() << std::endl;
-        return false;
-    }
-
-    int imgFlags = IMG_INIT_PNG;
-    if (!(IMG_Init(imgFlags) & imgFlags)) {
-        std::cerr << "SDL_image could not initialize! SDL_image Error: " << IMG_GetError() << std::endl;
-        return false;
-    }
-
-    if (TTF_Init() == -1) {
-        std::cerr << "SDL_ttf could not initialize! SDL_ttf Error: " << TTF_GetError() << std::endl;
-        return false;
-    }
-
-    return true;
-}
-
-SDL_Texture* loadTexture(const std::string& path) {
-    SDL_Texture* newTexture = nullptr;
-    SDL_Surface* loadedSurface = IMG_Load(path.c_str());
-    if (loadedSurface == nullptr) {
-        std::cerr << "Unable to load image " << path << "! SDL_image Error: " << IMG_GetError() << std::endl;
-    }
-    else {
-        newTexture = SDL_CreateTextureFromSurface(renderer, loadedSurface);
-        if (newTexture == nullptr) {
-            std::cerr << "Unable to create texture from " << path << "! SDL Error: " << SDL_GetError() << std::endl;
+    bool init() {
+        if (SDL_Init(SDL_INIT_VIDEO) < 0) {
+            std::cerr << "SDL could not initialize! SDL_Error: " << SDL_GetError() << std::endl;
+            return false;
         }
-        SDL_FreeSurface(loadedSurface);
-    }
-    return newTexture;
-}
 
-SDL_Texture* renderText(const std::string& message, SDL_Color color, int fontSize, SDL_Renderer* renderer) {
-    TTF_Font* font = TTF_OpenFont("constan.ttf", fontSize);
-    if (font == nullptr) {
-        std::cerr << "Failed to load font: " << TTF_GetError() << std::endl;
-        return nullptr;
+        window = SDL_CreateWindow("Bullet Hell Game", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, SCREEN_WIDTH, SCREEN_HEIGHT, SDL_WINDOW_SHOWN);
+        if (window == nullptr) {
+            std::cerr << "Window could not be created! SDL_Error: " << SDL_GetError() << std::endl;
+            return false;
+        }
+
+        renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED);
+        if (renderer == nullptr) {
+            std::cerr << "Renderer could not be created! SDL_Error: " << SDL_GetError() << std::endl;
+            return false;
+        }
+
+        if (TTF_Init() == -1) {
+            std::cerr << "SDL_ttf could not initialize! SDL_ttf Error: " << TTF_GetError() << std::endl;
+            return false;
+        }
+
+        font = TTF_OpenFont("constan.ttf", 24);
+        if (font == nullptr) {
+            std::cerr << "Failed to load font! TTF_Error: " << TTF_GetError() << std::endl;
+            return false;
+        }
+
+        return true;
     }
 
-    SDL_Surface* surf = TTF_RenderText_Blended(font, message.c_str(), color);
-    if (surf == nullptr) {
+    SDL_Texture* loadTexture(const std::string& path) {
+        SDL_Texture* newTexture = nullptr;
+        SDL_Surface* loadedSurface = IMG_Load(path.c_str());
+        if (loadedSurface == nullptr) {
+            std::cerr << "Unable to load image " << path << "! SDL_image Error: " << IMG_GetError() << std::endl;
+        }
+        else {
+            newTexture = SDL_CreateTextureFromSurface(renderer, loadedSurface);
+            if (newTexture == nullptr) {
+                std::cerr << "Unable to create texture from " << path << "! SDL Error: " << SDL_GetError() << std::endl;
+            }
+            SDL_FreeSurface(loadedSurface);
+        }
+        return newTexture;
+    }
+
+    void renderText(const std::string& message, int x, int y, SDL_Color color, bool centered = false, int fontSize = 24) {
+        // 加载指定大小的字体
+        TTF_Font* tempFont = TTF_OpenFont("constan.ttf", fontSize);
+        if (tempFont == nullptr) {
+            std::cerr << "Failed to load font! TTF_Error: " << TTF_GetError() << std::endl;
+            return;
+        }
+
+        SDL_Surface* textSurface = TTF_RenderText_Solid(tempFont, message.c_str(), color);
+        if (textSurface != nullptr) {
+            SDL_Texture* textTexture = SDL_CreateTextureFromSurface(renderer, textSurface);
+
+            SDL_Rect renderQuad = { x, y, textSurface->w, textSurface->h };
+
+            // 如果需要居中，则调整 x 坐标
+            if (centered) {
+                renderQuad.x = (SCREEN_WIDTH - textSurface->w) / 2;
+            }
+
+            SDL_RenderCopy(renderer, textTexture, nullptr, &renderQuad);
+
+            SDL_DestroyTexture(textTexture);
+            SDL_FreeSurface(textSurface);
+        }
+        else {
+            std::cerr << "Unable to render text surface! SDL_ttf Error: " << TTF_GetError() << std::endl;
+        }
+
+        // 关闭临时字体
+        TTF_CloseFont(tempFont);
+    }
+
+    void renderButton(const std::string& message, SDL_Rect& rect, SDL_Color textColor) {
+        // 渲染按钮文本，获取文本的宽度和高度
+        SDL_Surface* textSurface = TTF_RenderText_Solid(font, message.c_str(), textColor);
+        if (textSurface != nullptr) {
+            SDL_Texture* textTexture = SDL_CreateTextureFromSurface(renderer, textSurface);
+
+            // 设置按钮的边距
+            int padding = 20;
+            rect.w = textSurface->w + padding * 2;
+            rect.h = textSurface->h + padding * 2;
+            rect.x = (SCREEN_WIDTH - rect.w) / 2;  // 居中按钮
+
+            // 渲染按钮背景
+            SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
+            SDL_RenderFillRect(renderer, &rect);
+
+            // 渲染按钮边框
+            SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+            SDL_RenderDrawRect(renderer, &rect);
+
+            // 渲染文本，使其居中在按钮内
+            SDL_Rect textRect = { rect.x + padding, rect.y + padding, textSurface->w, textSurface->h };
+            SDL_RenderCopy(renderer, textTexture, nullptr, &textRect);
+
+            SDL_DestroyTexture(textTexture);
+            SDL_FreeSurface(textSurface);
+        }
+    }
+
+    void renderMainMenu() {
+        SDL_SetRenderDrawColor(renderer, 0x00, 0x00, 0x00, 0xFF);
+        SDL_RenderClear(renderer);
+
+        SDL_Color white = { 255, 255, 255, 255 };
+        SDL_Color red = { 255, 0, 0, 255 };
+		SDL_Color black = { 0, 0, 0, 0 };
+
+        // 居中显示游戏标题
+        renderText("Bullet Hell Game", 0, 100, red, true,72);
+
+        // 使用 renderButton 函数渲染按钮
+        renderButton("Start Game", startButtonRect, black);
+        renderButton("Quit Game", quitButtonRect, black);
+
+        SDL_RenderPresent(renderer);
+    }
+
+    void renderGameOver() {
+        SDL_SetRenderDrawColor(renderer, 0x00, 0x00, 0x00, 0xFF);
+        SDL_RenderClear(renderer);
+
+        SDL_Color white = { 255, 255, 255, 255 };
+        SDL_Color red = { 255, 0, 0, 255 };
+		SDL_Color black = { 0, 0, 0, 0 };
+
+        // 居中显示游戏结束信息
+        renderText("Game Over", 0, 150, red, true,72);
+
+        // 显示分数、时间和杀敌数
+        renderText("Score: " + std::to_string(score), 0, 250, white, true);
+        renderText("Time: " + std::to_string(finalGameTime) + "s", 0, 300, white, true);
+        renderText("Enemies Killed: " + std::to_string(enemyKillCount), 0, 350, white, true);
+
+        // 显示返回主菜单按钮
+        renderButton("Return to Main Menu", returnButtonRect, black);
+
+        SDL_RenderPresent(renderer);
+    }
+
+    void renderHUD() {
+        SDL_Color white = { 255, 255, 255, 255 };
+
+        // 显示生命值、杀敌数和时间
+        renderText("Lives: " + std::to_string(player->lives), 10, 10, white);
+        renderText("Kills: " + std::to_string(enemyKillCount), 10, 40, white);
+        Uint32 elapsedTime = (SDL_GetTicks() - gameStartTime) / 1000;
+        renderText("Time: " + std::to_string(elapsedTime) + "s", 10, 70, white);
+    }
+
+    void render() {
+        if (gameState == GAME_OVER) {
+            renderGameOver();
+        }
+        else if (gameState == MAIN_MENU) {
+            renderMainMenu();
+        }
+        else {
+            SDL_SetRenderDrawColor(renderer, 0x00, 0x00, 0x00, 0xFF);
+            SDL_RenderClear(renderer);
+
+            player->render(renderer);
+            for (auto& bullet : bullets) {
+                bullet.render(renderer);
+            }
+            for (auto& enemy : enemies) {
+                enemy.render(renderer);
+            }
+
+            renderHUD();
+
+            SDL_RenderPresent(renderer);
+        }
+    }
+
+    void close() {
+        SDL_DestroyTexture(playerTexture);
+        SDL_DestroyTexture(enemyTexture);
         TTF_CloseFont(font);
-        std::cerr << "Failed to render text: " << TTF_GetError() << std::endl;
-        return nullptr;
+
+        playerTexture = nullptr;
+        enemyTexture = nullptr;
+        font = nullptr;
+
+        SDL_DestroyRenderer(renderer);
+        SDL_DestroyWindow(window);
+        renderer = nullptr;
+        window = nullptr;
+
+        TTF_Quit();
+        SDL_Quit();
     }
 
-    SDL_Texture* texture = SDL_CreateTextureFromSurface(renderer, surf);
-    if (texture == nullptr) {
-        std::cerr << "Failed to create texture: " << SDL_GetError() << std::endl;
+    void resetGame() {
+        player = new Player(400, 500, 50, 50, playerTexture, 3);
+        enemies.clear();
+        bullets.clear();
+        score = 0;
+        enemySpawnRate = 3000;
+        lastEnemySpawnTime = 0;
+        lastEnemyFireTime = 0;
+        enemyKillCount = 0;
+        gameStartTime = SDL_GetTicks();
+        finalGameTime = 0;
     }
 
-    SDL_FreeSurface(surf);
-    TTF_CloseFont(font);
-    return texture;
-}
-
-void renderText(const std::string& message, int x, int y) {
-    SDL_Color color = { 255, 255, 255, 255 };
-    SDL_Texture* texture = renderText(message, color, 24, renderer);
-    if (texture == nullptr) {
-        return;
-    }
-
-    int textWidth = 0;
-    int textHeight = 0;
-    SDL_QueryTexture(texture, nullptr, nullptr, &textWidth, &textHeight);
-    SDL_Rect renderQuad = { x, y, textWidth, textHeight };
-
-    SDL_RenderCopy(renderer, texture, nullptr, &renderQuad);
-    SDL_DestroyTexture(texture);
-}
-
-void close() {
-    SDL_DestroyTexture(playerTexture);
-    SDL_DestroyTexture(enemyTexture);
-    playerTexture = nullptr;
-    enemyTexture = nullptr;
-
-    SDL_DestroyRenderer(renderer);
-    SDL_DestroyWindow(window);
-    window = nullptr;
-    renderer = nullptr;
-
-    IMG_Quit();
-    TTF_Quit();
-    SDL_Quit();
-}
-
-void spawnEnemy() {
-    GameObject enemy;
-    enemy.rect = { rand() % (800 - 50), 0, 50, 50 };
-    enemy.texture = enemyTexture;
-    enemies.push_back(enemy);
-}
-
-void fireBullet(SDL_Rect& rect, bool isPlayerBullet) {
-    Bullet bullet;
-    bullet.rect = { rect.x + rect.w / 2 - 5, rect.y, 10, 20 };
-    bullet.speed = isPlayerBullet ? -10 : 5;
-    bullet.isPlayerBullet = isPlayerBullet;
-    bullets.push_back(bullet);
-}
-
-void resetGame() {
-    // 重置游戏状态
-    gameState = MAIN_MENU;
-    playerLives = 3;
-    score = 0;
-    enemySpawnRate = 3000; // 恢复默认敌人生成速度
-    lastEnemySpawnTime = 0;
-    enemies.clear();
-    bullets.clear();
-    playerRect = { 375, 550, 50, 50 };
-    gameStartTime = SDL_GetTicks();
-    finalGameTime = 0;
-    enemyKillCount = 0;
-}
-
-void handleEvents(bool& quit, SDL_Rect& playerRect) {
-    SDL_Event e;
-    while (SDL_PollEvent(&e) != 0) {
-        if (e.type == SDL_QUIT) {
-            quit = true;
+    void update() {
+        if (gameState == GAME_OVER) {
+            return;
         }
-        else if (e.type == SDL_KEYDOWN) {
-            if (e.key.keysym.sym == SDLK_SPACE) {
-                fireBullet(playerRect, true);
+
+        // 更新子弹位置
+        for (auto bulletIt = bullets.begin(); bulletIt != bullets.end();) {
+            bulletIt->update();
+            if (bulletIt->rect.y < 0 || bulletIt->rect.y > SCREEN_HEIGHT) {
+                bulletIt = bullets.erase(bulletIt);  // 移除超出屏幕的子弹
+            }
+            else {
+                ++bulletIt;
+            }
+        }
+
+        // 更新敌人位置
+        for (auto& enemy : enemies) {
+            enemy.update();
+
+            // 敌人随机发射子弹
+            Uint32 currentTime = SDL_GetTicks();
+            if (currentTime - enemy.lastShotTime > enemy.shootInterval) {
+                enemy.fireBullet(bullets);
+                enemy.lastShotTime = currentTime;
+            }
+        }
+
+        // 检测子弹与敌人的碰撞
+        checkBulletEnemyCollision();
+
+        // 检测玩家与敌人的碰撞
+        checkPlayerEnemyCollision();
+
+        // 检测敌人子弹与玩家的碰撞
+        checkBulletPlayerCollision();
+
+        // 检测敌人是否到达屏幕底部
+        checkEnemyBottomCollision();
+
+        // 生成新的敌人
+        spawnEnemy();
+
+        // 检查玩家生命值，若为0则进入游戏结束状态
+        if (player->lives <= 0) {
+            gameState = GAME_OVER;
+            finalGameTime = (SDL_GetTicks() - gameStartTime) / 1000;  // 记录游戏结束时间（秒）
+        }
+    }
+
+    void handleMouseClick(int x, int y, bool& quit) {
+        if (gameState == MAIN_MENU) {
+            // 检查是否点击了 "Start Game" 按钮
+            if (x >= startButtonRect.x && x <= startButtonRect.x + startButtonRect.w &&
+                y >= startButtonRect.y && y <= startButtonRect.y + startButtonRect.h) {
+                gameState = PLAYING;           // 切换到游戏进行状态
+                gameStartTime = SDL_GetTicks(); // 记录游戏开始时间
+                resetGame();                    // 重置游戏数据
+            }
+            // 检查是否点击了 "Quit Game" 按钮
+            else if (x >= quitButtonRect.x && x <= quitButtonRect.x + quitButtonRect.w &&
+                y >= quitButtonRect.y && y <= quitButtonRect.y + quitButtonRect.h) {
+                quit = true; // 退出游戏
+            }
+        }
+        else if (gameState == GAME_OVER) {
+            // 检查是否点击了 "Return to Main Menu" 按钮
+            if (x >= returnButtonRect.x && x <= returnButtonRect.x + returnButtonRect.w &&
+                y >= returnButtonRect.y && y <= returnButtonRect.y + returnButtonRect.h) {
+                gameState = MAIN_MENU; // 返回到主菜单
+                resetGame();           // 重置游戏数据
             }
         }
     }
 
-    const Uint8* currentKeyStates = SDL_GetKeyboardState(nullptr);
-    int moveX = 0;
-    int moveY = 0;
-    if (currentKeyStates[SDL_SCANCODE_UP]) moveY = -5;
-    if (currentKeyStates[SDL_SCANCODE_DOWN]) moveY = 5;
-    if (currentKeyStates[SDL_SCANCODE_LEFT]) moveX = -5;
-    if (currentKeyStates[SDL_SCANCODE_RIGHT]) moveX = 5;
 
-    playerRect.x += moveX;
-    playerRect.y += moveY;
+    void spawnEnemy() {
+        Uint32 currentTime = SDL_GetTicks();
+        if (currentTime - lastEnemySpawnTime > static_cast<Uint32>(enemySpawnRate)) {
+            int x = rand() % (SCREEN_WIDTH - 50); // 随机生成敌人的 x 坐标
+            enemies.emplace_back(x, 0, 50, 50, enemyTexture); // 在顶部生成新的敌人
+            lastEnemySpawnTime = currentTime; // 更新上一次生成敌人的时间
 
-    if (playerRect.y < 0) playerRect.y = 0;
-    if (playerRect.y + playerRect.h > 600) playerRect.y = 600 - playerRect.h;
-    if (playerRect.x < 0) playerRect.x = 0;
-    if (playerRect.x + playerRect.w > 800) playerRect.x = 800 - playerRect.w;
-}
-
-void update() {
-    for (auto it = bullets.begin(); it != bullets.end();) {
-        it->rect.y += it->speed;
-        if (it->rect.y < 0 || it->rect.y > 600) {
-            it = bullets.erase(it);
-        }
-        else {
-            ++it;
+            // 随着时间推移，逐渐减少敌人生成间隔，加快生成速度
+            if (enemySpawnRate > minSpawnRate) {
+                enemySpawnRate -= 50;
+            }
         }
     }
 
-    // Update enemies and check if they reach the bottom of the screen
-    for (auto it = enemies.begin(); it != enemies.end();) {
-        it->rect.y += 2;
 
-        // Check if enemy has reached the bottom of the screen
-        if (it->rect.y >= 600) { // Assuming 600 is the screen height
-            playerLives--; // Reduce player lives
-            it = enemies.erase(it); // Remove enemy that reached the bottom
+    void handleEvents(bool& quit) {
+        SDL_Event e;
+        while (SDL_PollEvent(&e) != 0) {
+            if (e.type == SDL_QUIT) {
+                quit = true;
+            }
+            else if (e.type == SDL_MOUSEBUTTONDOWN) {
+                int x, y;
+                SDL_GetMouseState(&x, &y);
+                handleMouseClick(x, y, quit);
+            }
         }
-        else {
-            ++it;
+
+        if (gameState == PLAYING) {
+            const Uint8* currentKeyStates = SDL_GetKeyboardState(nullptr);
+            player->handleInput(currentKeyStates, bullets);
         }
     }
 
-    // Handle collisions between player bullets and enemies
-    for (auto it = bullets.begin(); it != bullets.end();) {
-        bool bulletRemoved = false;
-        if (it->isPlayerBullet) {
+    void checkBulletEnemyCollision() {
+        for (auto bulletIt = bullets.begin(); bulletIt != bullets.end();) {
+            bool bulletRemoved = false;
             for (auto enemyIt = enemies.begin(); enemyIt != enemies.end();) {
-                if (SDL_HasIntersection(&it->rect, &enemyIt->rect)) {
-                    enemyIt = enemies.erase(enemyIt);
-                    it = bullets.erase(it);
+                if (bulletIt->isPlayerBullet && SDL_HasIntersection(&bulletIt->rect, &enemyIt->rect)) {
+                    bulletIt = bullets.erase(bulletIt);  // 移除子弹
+                    enemyIt = enemies.erase(enemyIt);    // 移除敌人
+                    score += 100;                       // 更新分数
+                    enemyKillCount++;                   // 更新击杀计数
                     bulletRemoved = true;
-                    score += 10;
-                    enemyKillCount++;
                     break;
                 }
                 else {
                     ++enemyIt;
                 }
             }
-        }
-        else {
-            if (SDL_HasIntersection(&it->rect, &playerRect)) {
-                playerLives--;
-                it = bullets.erase(it);
-                bulletRemoved = true;
-            }
-        }
-        if (!bulletRemoved) ++it;
-    }
-
-    // Check for game over condition
-    if (playerLives <= 0 && gameState != GAME_OVER) {
-        gameState = GAME_OVER;
-        finalGameTime = (SDL_GetTicks() - gameStartTime) / 1000; // Store the final game time in seconds
-    }
-
-    // Spawn enemies and manage enemy fire if the game is in PLAYING state
-    if (gameState == PLAYING) {
-        Uint32 currentTime = SDL_GetTicks();
-        if (currentTime > lastEnemySpawnTime + enemySpawnRate) {
-            spawnEnemy();
-            lastEnemySpawnTime = currentTime;
-        }
-
-        if (enemySpawnRate > 1000) enemySpawnRate -= 1;
-
-        if (currentTime > lastEnemyFireTime + enemyFireRate) {
-            for (auto& enemy : enemies) {
-                fireBullet(enemy.rect, false);
-            }
-            lastEnemyFireTime = currentTime + rand() % 2000;
-        }
-    }
-}
-
-
-void renderMainMenu(SDL_Renderer* renderer) {
-    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
-    SDL_RenderClear(renderer);
-
-    SDL_Color white = { 255, 255, 255, 255 };
-    SDL_Color yellow = { 255, 255, 0, 255 };
-
-    SDL_Texture* titleTexture = renderText("Bullet Hell Game", white, 48, renderer);
-    if (titleTexture != nullptr) {
-        int textWidth, textHeight;
-        SDL_QueryTexture(titleTexture, nullptr, nullptr, &textWidth, &textHeight);
-        SDL_Rect titleRect = { 400 - textWidth / 2, 150, textWidth, textHeight };
-        SDL_RenderCopy(renderer, titleTexture, nullptr, &titleRect);
-        SDL_DestroyTexture(titleTexture);
-    }
-
-    SDL_Texture* startTexture = renderText("Start Game", yellow, 32, renderer);
-    if (startTexture != nullptr) {
-        int textWidth, textHeight;
-        SDL_QueryTexture(startTexture, nullptr, nullptr, &textWidth, &textHeight);
-        SDL_Rect startRect = { 400 - textWidth / 2, 300, textWidth, textHeight };
-        SDL_RenderCopy(renderer, startTexture, nullptr, &startRect);
-        SDL_DestroyTexture(startTexture);
-    }
-
-    SDL_Texture* exitTexture = renderText("Exit Game", white, 32, renderer);
-    if (exitTexture != nullptr) {
-        int textWidth, textHeight;
-        SDL_QueryTexture(exitTexture, nullptr, nullptr, &textWidth, &textHeight);
-        SDL_Rect exitRect = { 400 - textWidth / 2, 360, textWidth, textHeight };
-        SDL_RenderCopy(renderer, exitTexture, nullptr, &exitRect);
-        SDL_DestroyTexture(exitTexture);
-    }
-
-    SDL_RenderPresent(renderer);
-}
-
-void handleMainMenuEvents(bool& quit, GameState& gameState) {
-    SDL_Event e;
-    int mouseX, mouseY;
-
-    // Define the positions for "Start Game" and "Exit Game" text
-    SDL_Rect startGameRect = { 400 - 75, 300, 150, 32 }; // Adjust width/height based on text size
-    SDL_Rect exitGameRect = { 400 - 75, 360, 150, 32 }; // Adjust width/height based on text size
-
-    while (SDL_PollEvent(&e) != 0) {
-        if (e.type == SDL_QUIT) {
-            quit = true;
-        }
-        else if (e.type == SDL_MOUSEBUTTONDOWN) {
-            SDL_GetMouseState(&mouseX, &mouseY);
-
-            // Check if the mouse click is within "Start Game"
-            if (mouseX >= startGameRect.x && mouseX <= startGameRect.x + startGameRect.w &&
-                mouseY >= startGameRect.y && mouseY <= startGameRect.y + startGameRect.h) {
-                gameState = PLAYING;
-                gameStartTime = SDL_GetTicks();
-            }
-
-            // Check if the mouse click is within "Exit Game"
-            if (mouseX >= exitGameRect.x && mouseX <= exitGameRect.x + exitGameRect.w &&
-                mouseY >= exitGameRect.y && mouseY <= exitGameRect.y + exitGameRect.h) {
-                quit = true;
+            if (!bulletRemoved) {
+                ++bulletIt;
             }
         }
     }
-}
 
-void renderGameOver() {
-    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
-    SDL_RenderClear(renderer);
-
-    SDL_Color red = { 255, 0, 0, 255 };
-    SDL_Color white = { 255, 255, 255, 255 };
-
-    // Render "Game Over" message
-    SDL_Texture* gameOverTexture = renderText("Game Over", red, 48, renderer);
-    if (gameOverTexture != nullptr) {
-        int textWidth, textHeight;
-        SDL_QueryTexture(gameOverTexture, nullptr, nullptr, &textWidth, &textHeight);
-        SDL_Rect renderQuad = { 400 - textWidth / 2, 150, textWidth, textHeight };
-        SDL_RenderCopy(renderer, gameOverTexture, nullptr, &renderQuad);
-        SDL_DestroyTexture(gameOverTexture);
-    }
-
-    // Display the number of enemies killed
-    std::string enemiesKilledText = "Enemies Killed: " + std::to_string(enemyKillCount);
-    SDL_Texture* killCountTexture = renderText(enemiesKilledText, white, 32, renderer);
-    if (killCountTexture != nullptr) {
-        int textWidth, textHeight;
-        SDL_QueryTexture(killCountTexture, nullptr, nullptr, &textWidth, &textHeight);
-        SDL_Rect renderQuad = { 400 - textWidth / 2, 250, textWidth, textHeight };
-        SDL_RenderCopy(renderer, killCountTexture, nullptr, &renderQuad);
-        SDL_DestroyTexture(killCountTexture);
-    }
-
-    // Display the final game time
-    std::string timeText = "Time: " + std::to_string(finalGameTime) + "s";
-    SDL_Texture* timeTexture = renderText(timeText, white, 32, renderer);
-    if (timeTexture != nullptr) {
-        int textWidth, textHeight;
-        SDL_QueryTexture(timeTexture, nullptr, nullptr, &textWidth, &textHeight);
-        SDL_Rect renderQuad = { 400 - textWidth / 2, 300, textWidth, textHeight };
-        SDL_RenderCopy(renderer, timeTexture, nullptr, &renderQuad);
-        SDL_DestroyTexture(timeTexture);
-    }
-
-    // Render "Return to Main Menu" option
-    SDL_Texture* returnTexture = renderText("Return to Main Menu", white, 32, renderer);
-    if (returnTexture != nullptr) {
-        int textWidth, textHeight;
-        SDL_QueryTexture(returnTexture, nullptr, nullptr, &textWidth, &textHeight);
-        SDL_Rect returnRect = { 400 - textWidth / 2, 400, textWidth, textHeight };
-        SDL_RenderCopy(renderer, returnTexture, nullptr, &returnRect);
-        SDL_DestroyTexture(returnTexture);
-    }
-
-    SDL_RenderPresent(renderer);
-}
-
-
-void handleGameOverEvents(bool& quit) {
-    SDL_Event e;
-    int mouseX, mouseY;
-
-    // Define the position for "Return to Main Menu" text
-    SDL_Rect returnMenuRect = { 400 - 75, 400, 150, 32 }; // Adjust width/height based on text size
-
-    while (SDL_PollEvent(&e) != 0) {
-        if (e.type == SDL_QUIT) {
-            quit = true;
-        }
-        else if (e.type == SDL_MOUSEBUTTONDOWN) {
-            SDL_GetMouseState(&mouseX, &mouseY);
-
-            // Check if the mouse click is within "Return to Main Menu"
-            if (mouseX >= returnMenuRect.x && mouseX <= returnMenuRect.x + returnMenuRect.w &&
-                mouseY >= returnMenuRect.y && mouseY <= returnMenuRect.y + returnMenuRect.h) {
-
-                // Reset game variables and return to main menu
-				resetGame();
+    void checkPlayerEnemyCollision() {
+        for (auto enemyIt = enemies.begin(); enemyIt != enemies.end();) {
+            if (SDL_HasIntersection(&player->rect, &enemyIt->rect)) {
+                enemyIt = enemies.erase(enemyIt);  // 移除敌人
+                player->lives--;                  // 减少玩家生命值
+                if (player->lives <= 0) {
+                    gameState = GAME_OVER;        // 切换到游戏结束状态
+                }
+            }
+            else {
+                ++enemyIt;
             }
         }
     }
-}
 
-
-void render() {
-    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
-    SDL_RenderClear(renderer);
-
-    SDL_RenderCopy(renderer, playerTexture, nullptr, &playerRect);
-
-    for (const auto& enemy : enemies) {
-        SDL_RenderCopy(renderer, enemy.texture, nullptr, &enemy.rect);
+    void checkBulletPlayerCollision() {
+        for (auto bulletIt = bullets.begin(); bulletIt != bullets.end();) {
+            if (!bulletIt->isPlayerBullet && SDL_HasIntersection(&bulletIt->rect, &player->rect)) {
+                bulletIt = bullets.erase(bulletIt);  // 移除敌人子弹
+                player->lives--;                    // 减少玩家生命值
+                if (player->lives <= 0) {
+                    gameState = GAME_OVER;          // 切换到游戏结束状态
+                }
+            }
+            else {
+                ++bulletIt;
+            }
+        }
     }
 
-    SDL_SetRenderDrawColor(renderer, 255, 255, 255, 255);
-    for (const auto& bullet : bullets) {
-        SDL_RenderFillRect(renderer, &bullet.rect);
+    void checkEnemyBottomCollision() {
+        for (auto enemyIt = enemies.begin(); enemyIt != enemies.end();) {
+            if (enemyIt->rect.y + enemyIt->rect.h >= SCREEN_HEIGHT) {
+                enemyIt = enemies.erase(enemyIt);  // 移除敌人
+                player->lives--;                  // 扣除玩家生命值
+                if (player->lives <= 0) {
+                    gameState = GAME_OVER;        // 切换到游戏结束状态
+                }
+            }
+            else {
+                ++enemyIt;
+            }
+        }
     }
 
-    renderText("Lives: " + std::to_string(playerLives), 10, 10);
-    renderText("Enemies Killed: " + std::to_string(enemyKillCount), 10, 40);
-    Uint32 gameTime = (SDL_GetTicks() - gameStartTime) / 1000;
-    renderText("Time: " + std::to_string(gameTime) + "s", 10, 70);
-
-    SDL_RenderPresent(renderer);
-}
+};
 
 int main(int argc, char* args[]) {
-    if (!init()) {
+
+    HWND hwnd = GetConsoleWindow();
+    ShowWindow(hwnd, SW_HIDE);
+
+    Game game;
+
+    // 初始化游戏
+    if (!game.init()) {
         std::cerr << "Failed to initialize!" << std::endl;
+        SDL_Log("Program started");
         return -1;
     }
 
-    playerTexture = loadTexture("player.png");
-    enemyTexture = loadTexture("enemy.png");
-    if (playerTexture == nullptr || enemyTexture == nullptr) {
+    // 加载资源
+    game.playerTexture = game.loadTexture("player.png");
+    game.enemyTexture = game.loadTexture("enemy.png");
+
+    if (game.playerTexture == nullptr || game.enemyTexture == nullptr) {
         std::cerr << "Failed to load textures!" << std::endl;
+        game.close();
         return -1;
     }
 
+    // 初始化玩家和游戏对象
+    game.player = new Player(375, 500, 50, 50, game.playerTexture, 3);
+    game.enemies.clear();
+    game.bullets.clear();
+
+    // 主循环
     bool quit = false;
-
     while (!quit) {
-        Uint32 frameStart = SDL_GetTicks();
+        game.handleEvents(quit);
 
-        switch (gameState) {
+        switch (game.gameState) {
         case MAIN_MENU:
-            renderMainMenu(renderer);
-            handleMainMenuEvents(quit, gameState);
+            game.renderMainMenu();
             break;
+
         case PLAYING:
-            handleEvents(quit, playerRect);
-            update();
-            render();
+            game.update();
+            game.render();
             break;
+
         case GAME_OVER:
-            renderGameOver();
-            handleGameOverEvents(quit);
+            game.renderGameOver();
+            break;
+
+        default:
             break;
         }
 
-        Uint32 frameTime = SDL_GetTicks() - frameStart;
-        if (frameDelay > frameTime) {
-            SDL_Delay(frameDelay - frameTime);
-        }
+        SDL_Delay(game.frameDelay);
     }
 
-    close();
+    // 释放资源并关闭游戏
+    game.close();
     return 0;
 }
