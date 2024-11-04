@@ -451,7 +451,7 @@ public:
 
             // 随着时间推移，逐渐减少敌人生成间隔，加快生成速度
             if (enemySpawnRate > minSpawnRate) {
-                enemySpawnRate -= 50;
+                enemySpawnRate -= 100;
             }
         }
     }
