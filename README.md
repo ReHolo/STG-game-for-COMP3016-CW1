@@ -47,3 +47,4 @@ This project is a classic bullet hell game developed using SDL2, SDL_ttf, and SD
 - Implement power-ups for the player.
 - Add sound effects and background music.
 - Add difficulty levels.
+![屏幕截图 2024-11-04 052842](https://github.com/user-attachments/assets/cf8dfc7e-f49c-4887-bc3a-86cf929eb291)
