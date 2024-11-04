@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <ctime>
 #include <windows.h>
+#include <algorithm>
 
 const int SCREEN_WIDTH = 800;
 const int SCREEN_HEIGHT = 600;
