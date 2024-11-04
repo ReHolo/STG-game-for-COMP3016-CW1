@@ -168,7 +168,7 @@ public:
         font(nullptr),
         player(nullptr), score(0),
         enemySpawnRate(3000),
-        minSpawnRate(50),
+        minSpawnRate(200),
         lastEnemySpawnTime(0),
         FPS(60),
         frameDelay(1000 / FPS),
