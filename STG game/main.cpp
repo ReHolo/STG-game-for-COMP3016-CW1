@@ -28,14 +28,16 @@ public:
 
 class Bullet : public GameObject {
 public:
-    int speed;
+    int speedY;
+    int speedX; // 水平速度
     bool isPlayerBullet;
 
-    Bullet(int x, int y, int spd, bool isPlayer)
-        : GameObject(x, y, 5, 10, nullptr), speed(spd), isPlayerBullet(isPlayer) {}
+    Bullet(int x, int y, int spdY, bool isPlayer, int spdX = 0)
+        : GameObject(x, y, 5, 10, nullptr), speedY(spdY), speedX(spdX), isPlayerBullet(isPlayer) {}
 
     void update() override {
-        rect.y += speed;
+        rect.y += speedY;
+        rect.x += speedX; // 更新水平位置
     }
 
     void render(SDL_Renderer* renderer) override {
@@ -44,14 +46,17 @@ public:
     }
 };
 
+
 class Player : public GameObject {
 public:
     int lives;
     Uint32 lastShotTime;
-    const Uint32 shotInterval = 300;
+    Uint32 shotInterval; // 将 shotInterval 改为普通成员变量
+    int extraBulletCount = 0; // 额外弹幕的数量
+    int enemyKillCount = 0;   // 击杀敌人的计数器
 
     Player(int x, int y, int w, int h, SDL_Texture* tex, int lv)
-        : GameObject(x, y, w, h, tex), lives(lv), lastShotTime(0) {}
+        : GameObject(x, y, w, h, tex), lives(lv), lastShotTime(0), shotInterval(300) {}
 
     void handleInput(const Uint8* currentKeyStates, std::vector<Bullet>& bullets) {
         int moveX = 0;
@@ -71,8 +76,32 @@ public:
 
         Uint32 currentTime = SDL_GetTicks();
         if (currentKeyStates[SDL_SCANCODE_SPACE] && currentTime - lastShotTime >= shotInterval) {
+            // 发射主弹幕
             bullets.emplace_back(rect.x + rect.w / 2 - 2, rect.y, -10, true);
+
+            // 根据 extraBulletCount 增加额外的斜方向弹幕
+            for (int i = 0; i < extraBulletCount; ++i) {
+                int offset = 5 + (i * 5); // 每个额外弹幕的偏移量
+                bullets.emplace_back(rect.x + rect.w / 2 - 2, rect.y, -10, true, -offset); // 左斜弹幕
+                bullets.emplace_back(rect.x + rect.w / 2 - 2, rect.y, -10, true, offset);  // 右斜弹幕
+            }
+
             lastShotTime = currentTime;
+        }
+    }
+
+    // 增加击杀计数器，每击杀15个敌人增加额外弹幕
+    void increaseKillCount() {
+        enemyKillCount++; // 先增加击杀计数
+
+        // 每20个敌人增加一对弹幕，最多增加两对
+        if (enemyKillCount % 20 == 0 && extraBulletCount < 2) {
+            extraBulletCount++;
+        }
+
+        // 每击杀10个敌人，减少射击间隔，最小不低于100毫秒
+        if (enemyKillCount % 1 == 0) {
+            shotInterval = max(shotInterval - 5, 100U);
         }
     }
 };
@@ -138,7 +167,7 @@ public:
         font(nullptr),
         player(nullptr), score(0),
         enemySpawnRate(3000),
-        minSpawnRate(500),
+        minSpawnRate(50),
         lastEnemySpawnTime(0),
         FPS(60),
         frameDelay(1000 / FPS),
@@ -483,8 +512,9 @@ public:
                 if (bulletIt->isPlayerBullet && SDL_HasIntersection(&bulletIt->rect, &enemyIt->rect)) {
                     bulletIt = bullets.erase(bulletIt);  // 移除子弹
                     enemyIt = enemies.erase(enemyIt);    // 移除敌人
-                    score += 100;                       // 更新分数
+                    score += 100;                       // 增加分数
                     enemyKillCount++;                   // 更新击杀计数
+                    player->increaseKillCount();        // 检查是否需要增加额外弹幕
                     bulletRemoved = true;
                     break;
                 }
@@ -497,6 +527,8 @@ public:
             }
         }
     }
+
+
 
     void checkPlayerEnemyCollision() {
         for (auto enemyIt = enemies.begin(); enemyIt != enemies.end();) {
